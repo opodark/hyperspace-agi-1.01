@@ -1,16 +1,14 @@
-FROM python:3.12-slim
+FROM python:3.9-slim
 
 WORKDIR /app
 
-COPY control-plane/requirements.txt .
+COPY worker/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY control-plane/main.py .
+COPY worker/main.py .
 
 COPY shared ./shared
 
 ENV PYTHONPATH=/app:/app/shared
-
-EXPOSE 8085
 
 CMD ["python", "main.py"]

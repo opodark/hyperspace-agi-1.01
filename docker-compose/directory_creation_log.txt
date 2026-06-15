@@ -1,0 +1,9 @@
+Directory creation log
+======================
+Created: authority/
+Created: control-plane/
+Created: worker/
+Created: shared/
+Created: shared/models/
+Created: infra-ui/
+Created: docker-compose/

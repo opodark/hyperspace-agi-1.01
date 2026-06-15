@@ -1,26 +1,65 @@
-version: '3.9'
+version: '3.8'
 
 services:
+  # --------------------
+  # EVENT BUS
+  # --------------------
+  nats:
+    image: nats:latest
+    container_name: hyperspace_nats
+    ports:
+      - "4222:4222"
 
+  # --------------------
+  # AUTHORITY
+  # --------------------
   authority:
-    build: ./authority
-    container_name: authority
+    build:
+      context: .
+      dockerfile: authority/Dockerfile
+    container_name: hyperspace_authority
     ports:
       - "8080:8080"
+    environment:
+      PYTHONUNBUFFERED: "1"
     networks:
       - hyperspace
 
+  # --------------------
+  # CONTROL PLANE
+  # --------------------
   control-plane:
-    build: ./control-plane
-    container_name: control-plane
+    build:
+      context: .
+      dockerfile: control-plane/Dockerfile
+    container_name: hyperspace_control_plane
+    depends_on:
+      - nats
+      - authority
     ports:
       - "8085:8085"
-    depends_on:
-      - authority
+    environment:
+      PYTHONUNBUFFERED: "1"
     networks:
       - hyperspace
+
+  # --------------------
+  # WORKER NODE
+  # --------------------
+  worker:
+    build:
+      context: .
+      dockerfile: worker/Dockerfile
+    container_name: hyperspace_worker_1
+    depends_on:
+      - nats
+    ports:
+      - "8084:8084"
     environment:
-      - AUTHORITY_URL=http://authority:8080
+      WORKER_ID: worker-1
+      PYTHONUNBUFFERED: "1"
+    networks:
+      - hyperspace
 
 networks:
   hyperspace:

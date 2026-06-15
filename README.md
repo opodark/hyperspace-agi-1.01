@@ -1,115 +1,96 @@
 # HyperSpace AGI v1.01
 
-Framework per agenti IA distribuiti basati su Small Language Models (SLM), eseguiti localmente tramite Docker e Ollama.
+Framework per agenti IA autonomi basati su SLM (Small Language Models), eseguiti localmente tramite Docker e Ollama.
 
-## Novità v1.01
+## Stack
 
-### Log Viewer esteso
-La dashboard include ora un Log Viewer categorizzato con 5 tab distinti:
+| Servizio | Porta | Descrizione |
+|---|---|---|
+| `control-plane` | 8085 | Dashboard + API orchestrazione |
+| `authority` | 8080 | Registry nodi + heartbeat |
+| `worker` | 8084 | Execution worker |
+| `nats` | 4222 | Event bus |
 
-| Tab | Tipo evento | Descrizione |
-|-----|------------|-------------|
-| 🔌 Connection Tests | `connection_test` | Handshake, latenza, esito connessioni |
-| 📡 Node Communication | `inter_node_message` | Messaggi dispatch/result tra nodi |
-| 💭 Dreams / Autonomous | `dream` | Task autonomi, planning, cicli dream |
-| 💬 Node Chats | `node_chat` | Chat e negoziazione tra nodi |
-| 🔑 Authority Events | `authority_event` | Rotazione secret, config authority |
+## Quick Start
 
-**Filtri disponibili:** nodo sorgente/target, status, full-text search, clear log.
+```bash
+git clone https://github.com/opodark/hyperspace-agi-1.01.git
+cd hyperspace-agi-1.01
+docker compose up -d --build
+```
+
+Dashboard: http://localhost:8085/dashboard
+
+## Dashboard v1.01 — Features
+
+### Tasks
+- Creazione e assegnazione task ai worker tramite UI
+
+### Log Viewer
+- **Connection Tests** — handshake, latenza, esito connessione tra nodi
+- **Node Communication** — messaggi inter-nodo, dispatch task, ack, retry
+- **Dreams / Autonomous Tasks** — cicli di pianificazione autonoma dei nodi
+- **Node Chats** — dialogo e negoziazione tra nodi
+- **Authority Events** — rotazione secret, update config, reachability
+- Filtri per nodo, status, full-text search
+- Auto-refresh ogni 4 secondi
+- Inject sample logs per test rapido
+
+### Diagnostics
+- Authority reachability test
+- Node list live
+- Simulate Dream event
+- Simulate Node Chat
 
 ### Advanced Setup
-Nuova sezione di configurazione avanzata con:
-- **Security**: Shared Secret con rotazione manuale e automatica, show/hide
+- **Security**: Shared secret con rotate automatico
 - **Authority Server**: URL, auth mode (none/token/jwt/public-key), enable/disable, test connessione
-- **Network Mode**: Authority-managed vs Pure Mesh (MHT) — toggle, bootstrap peers, MHT enable/disable *(MHT full implementation coming soon)*
-
-### Diagnostics Panel
-Pannello per test operativi manuali:
-- Authority Reachability Test
-- Node List refresh
-- Simulate Dream Event
-- Simulate Node Chat
+- **Network Mode**: Authority-managed | Pure Mesh (MHT — coming soon)
+- **Bootstrap Peers**: configurazione peers per modalità mesh
 
 ## Struttura
 
 ```
 hyperspace-agi-1.01/
-├── control-plane/
-│   ├── main.py          # Flask app: API + Dashboard HTML
-│   ├── Dockerfile
-│   └── requirements.txt
-├── authority/           # Authority server (node registry)
-├── worker/              # Worker node
-├── shared/              # Shared utilities
-├── docker-compose.yml
-└── README.md
+├── authority/          # Node registry (FastAPI)
+├── control-plane/      # Dashboard + orchestration (Flask)
+├── worker/             # Task executor (FastAPI)
+├── shared/             # Modelli condivisi (Node, Task, Workflow)
+├── infra-ui/           # OpenWebUI compose
+├── docker-compose.yml  # Stack minimo (authority + control-plane + worker + nats)
+└── docker-compose-2full.yml  # Stack completo (+ postgres + 3 worker)
 ```
 
-## Quick Start
+## API Reference
 
-```bash
-# Clone
-git clone https://github.com/opodark/hyperspace-agi-1.01.git
-cd hyperspace-agi-1.01
+### Control Plane (porta 8085)
 
-# Build e avvio
-docker compose up -d --build
+| Method | Path | Descrizione |
+|---|---|---|
+| GET | `/dashboard` | Dashboard HTML |
+| GET | `/tasks` | Lista tasks |
+| POST | `/task/create` | Crea task |
+| POST | `/task/assign` | Assegna ed esegui task |
+| GET | `/logs` | Stream logs (filtri: type, status, node, q) |
+| POST | `/logs/add` | Aggiungi log entry |
+| POST | `/logs/clear` | Svuota log |
+| GET | `/config/advanced` | Leggi config avanzata |
+| POST | `/config/advanced` | Salva config avanzata |
+| POST | `/config/authority/test` | Test reachability authority |
+| POST | `/config/secret/rotate` | Ruota shared secret |
 
-# Dashboard
-open http://localhost:8085/dashboard
-```
+### Authority (porta 8080)
 
-## API Log
-
-```bash
-# Tutti i log
-GET /logs
-
-# Filtrati per tipo
-GET /logs?type=connection_test
-GET /logs?type=dream&status=success
-GET /logs?node=node-alpha&q=task
-
-# Aggiungi log da worker/nodo esterno
-POST /logs/add
-{
-  "type": "node_chat",
-  "summary": "node-alpha → node-beta: 'hello'",
-  "sourceNode": "node-alpha",
-  "targetNode": "node-beta",
-  "status": "info"
-}
-
-# Clear
-POST /logs/clear
-```
-
-## API Advanced Config
-
-```bash
-# Leggi config (secret mascherato)
-GET /config/advanced
-
-# Salva config
-POST /config/advanced
-{
-  "security": {"sharedSecret": "mysecret"},
-  "authority": {"serverUrl": "http://authority:8080", "authMode": "jwt", "enabled": true},
-  "mesh": {"enabled": false, "mhtEnabled": false, "bootstrapPeers": []}
-}
-
-# Ruota secret
-POST /config/secret/rotate
-
-# Test authority
-POST /config/authority/test
-```
+| Method | Path | Descrizione |
+|---|---|---|
+| POST | `/register` | Registra nodo |
+| POST | `/heartbeat` | Heartbeat nodo |
+| GET | `/nodes` | Lista nodi registrati |
 
 ## Roadmap
 
-- [ ] Persistenza config su disco / volume Docker
-- [ ] Auth middleware con sharedSecret su ogni endpoint
-- [ ] WebSocket per log streaming real-time
-- [ ] MHT (Modular Hash Tree) mesh routing
-- [ ] Multi-node dream coordination
-- [ ] Node chat UI dedicata (thread view)
+- [ ] Mesh pura con MHT (Modular Hash Tree)
+- [ ] Ollama integration per inferenza locale
+- [ ] Persistenza log su SQLite
+- [ ] Multi-nodo con auto-discovery
+- [ ] Auth JWT tra nodi
