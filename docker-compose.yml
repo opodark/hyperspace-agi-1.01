@@ -184,7 +184,7 @@ services:
   # ── Worker ───────────────────────────────────────────
   worker:
     build:
-      context: .
+      context: .                    # root del progetto — necessario per COPY shared/
       dockerfile: worker/Dockerfile
     container_name: hyperspace_worker_1
     depends_on:
@@ -193,10 +193,12 @@ services:
       - ollama
     ports:
       - "8084:8084"
+    volumes:
+      - ./data/worker-1:/app/data   # persistenza identità nodo
     environment:
-      WORKER_ID: worker-1
-      WORKER_HOSTNAME: worker        # Docker service name — usato come host nel register
+      WORKER_HOSTNAME: worker
       WORKER_PORT: "8084"
+      DATA_DIR: /app/data
       AUTHORITY_URL: ${AUTHORITY_URL:-http://authority:8080}
       OLLAMA_URL: ${OLLAMA_URL:-http://ollama:11434}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-phi3}

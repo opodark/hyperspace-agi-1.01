@@ -1,14 +1,25 @@
 FROM python:3.9-slim
 
+# Build context deve essere la root del progetto
+# docker-compose: build.context: .
+
 WORKDIR /app
 
-COPY worker/requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Copia modulo condiviso
+COPY shared/ /app/shared/
 
-COPY worker/main.py .
+# Copia worker
+COPY worker/requirements.txt /app/worker/requirements.txt
+RUN pip install --no-cache-dir -r /app/worker/requirements.txt
 
-COPY shared ./shared
+COPY worker/ /app/worker/
 
-ENV PYTHONPATH=/app:/app/shared
+# Directory persistenza identità nodo
+RUN mkdir -p /app/data
+
+ENV DATA_DIR=/app/data
+ENV PYTHONPATH=/app
+
+WORKDIR /app/worker
 
 CMD ["python", "main.py"]
