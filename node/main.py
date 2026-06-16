@@ -1,11 +1,5 @@
 # node/main.py
 # HyperSpace AGI v0.2 — Unified Node
-#
-# Ogni container usa questa stessa immagine.
-# Il tier (root/hub/leaf) viene calcolato al boot in base
-# alle capabilities e alle risorse disponibili — non è hardcodato.
-# Nessuna authority esterna: ogni nodo mantiene un peer registry locale
-# e si sincronizza via /peers con gli altri nodi della rete.
 
 from fastapi import FastAPI
 import asyncio
@@ -20,37 +14,27 @@ from shared.identity import generate_or_load_identity, sign_message, verify_mess
 
 app = FastAPI()
 
-# ──────────────────────────────────────────────
-# IDENTITÀ CRITTOGRAFICA
-# ──────────────────────────────────────────────
+# ── IDENTITÀ ──────────────────────────────────────────────
 _identity    = generate_or_load_identity()
 NODE_ID      = _identity["node_id"]
 NODE_PUBKEY  = _identity["public_key"]
 _private_key = _identity["_private_key"]
 
-# ──────────────────────────────────────────────
-# CONFIG
-# ──────────────────────────────────────────────
-NODE_HOSTNAME    = os.getenv("NODE_HOSTNAME", "localhost")
-NODE_PORT        = int(os.getenv("NODE_PORT", 8084))
-OLLAMA_URL       = os.getenv("OLLAMA_URL", "http://ollama:11434")
-DEFAULT_MODEL    = os.getenv("OLLAMA_MODEL", "phi3")
-HEARTBEAT_EVERY  = int(os.getenv("HEARTBEAT_EVERY", 15))
-
-# PUBLIC_ENDPOINT: URL pubblico con cui questo nodo è raggiungibile dagli altri.
-# Se il nodo è dietro ngrok: PUBLIC_ENDPOINT=https://xxxx.ngrok-free.app
-# Se locale nella stessa rete Docker: lascia vuoto (usa NODE_HOSTNAME:NODE_PORT)
-PUBLIC_ENDPOINT = os.getenv("PUBLIC_ENDPOINT", "").strip().rstrip("/")
-
-# BOOT_PEERS: peer iniziali, separati da virgola.
-# Supporta sia 'host:porta' che URL completi 'https://xxxx.ngrok-free.app'
-BOOT_PEERS = [p.strip().rstrip("/") for p in os.getenv("BOOT_PEERS", "").split(",") if p.strip()]
+# ── CONFIG ────────────────────────────────────────────────
+NODE_HOSTNAME       = os.getenv("NODE_HOSTNAME", "localhost")
+NODE_PORT           = int(os.getenv("NODE_PORT", 8084))
+OLLAMA_URL          = os.getenv("OLLAMA_URL", "http://ollama:11434")
+DEFAULT_MODEL       = os.getenv("OLLAMA_MODEL", "phi3")
+HEARTBEAT_EVERY     = int(os.getenv("HEARTBEAT_EVERY", 15))
+PUBLIC_ENDPOINT     = os.getenv("PUBLIC_ENDPOINT", "").strip().rstrip("/")
+BOOT_PEERS          = [p.strip().rstrip("/") for p in os.getenv("BOOT_PEERS", "").split(",") if p.strip()]
+# URL del control-plane a cui questo nodo si auto-registra
+# Es: http://host.docker.internal:8085  oppure  https://xxxx.ngrok-free.dev
+CONTROL_PLANE_URL   = os.getenv("CONTROL_PLANE_URL", "").strip().rstrip("/")
 
 _boot_time = time.time()
 
-# ──────────────────────────────────────────────
-# TIER CALCULATION
-# ──────────────────────────────────────────────
+# ── TIER ──────────────────────────────────────────────────
 def detect_vram_gb() -> float:
     try:
         import subprocess
@@ -62,29 +46,18 @@ def detect_vram_gb() -> float:
     except Exception:
         return 0.0
 
-
 def calculate_tier(vram_gb: float, uptime_s: float, reputation: float = 0.5) -> str:
-    root_score = (
-        min(uptime_s / 604800, 1.0) * 25 +
-        0.5 * 35 +
-        reputation  * 40
-    )
-    if root_score >= 85.0:
-        return "root"
-    if vram_gb >= 4.0:
-        return "hub"
+    root_score = min(uptime_s / 604800, 1.0) * 25 + 0.5 * 35 + reputation * 40
+    if root_score >= 85.0: return "root"
+    if vram_gb >= 4.0:     return "hub"
     return "leaf"
-
 
 VRAM_GB = detect_vram_gb()
 NODE_CAPABILITIES = ["execute"]
 if VRAM_GB > 0 or os.getenv("OLLAMA_URL"):
     NODE_CAPABILITIES.append("ollama")
 
-# L'endpoint pubblicato agli altri nodi:
-# - se PUBLIC_ENDPOINT è settato (es. URL ngrok) lo usa direttamente
-# - altrimenti usa HOST:PORTA (per nodi nella stessa rete Docker/LAN)
-_local_endpoint = f"{NODE_HOSTNAME}:{NODE_PORT}"
+_local_endpoint          = f"{NODE_HOSTNAME}:{NODE_PORT}"
 NODE_ADVERTISED_ENDPOINT = PUBLIC_ENDPOINT if PUBLIC_ENDPOINT else _local_endpoint
 
 NODE_PROFILE = {
@@ -97,48 +70,29 @@ NODE_PROFILE = {
     "version":      "0.2.0",
 }
 
-# ──────────────────────────────────────────────
-# PEER REGISTRY LOCALE
-# ──────────────────────────────────────────────
-_peers: dict = {}   # node_id -> peer_info
-
+# ── PEER REGISTRY ─────────────────────────────────────────
+_peers: dict = {}
 
 def register_peer(info: dict):
     nid = info.get("node_id")
     if nid and nid != NODE_ID:
-        _peers[nid] = {
-            **info,
-            "last_seen": time.time(),
-            "status":    "active",
-        }
-
+        _peers[nid] = {**info, "last_seen": time.time(), "status": "active"}
 
 def prune_stale_peers(max_age_s: int = 60):
     now = time.time()
-    stale = [nid for nid, p in _peers.items() if now - p["last_seen"] > max_age_s]
-    for nid in stale:
-        _peers[nid]["status"] = "stale"
+    for nid, p in list(_peers.items()):
+        if now - p["last_seen"] > max_age_s:
+            _peers[nid]["status"] = "stale"
 
-
-# ──────────────────────────────────────────────
-# HELPERS
-# ──────────────────────────────────────────────
-
+# ── HELPERS ───────────────────────────────────────────────
 def build_signed_payload(data: dict) -> dict:
     payload = {**data, "pubkey": NODE_PUBKEY, "node_id": NODE_ID}
     return sign_message(payload, _private_key)
 
-
 def peer_to_url(endpoint: str) -> str:
-    """Normalizza un endpoint in URL completo.
-    - 'host:porta'  -> 'http://host:porta'
-    - 'https://...' -> invariato
-    - 'http://...'  -> invariato
-    """
     if endpoint.startswith("http://") or endpoint.startswith("https://"):
         return endpoint.rstrip("/")
     return f"http://{endpoint}"
-
 
 async def ollama_generate(prompt: str, model: str = DEFAULT_MODEL) -> str:
     payload = {"model": model, "prompt": prompt, "stream": False}
@@ -150,7 +104,6 @@ async def ollama_generate(prompt: str, model: str = DEFAULT_MODEL) -> str:
     except Exception as e:
         return f"[OLLAMA ERROR] {e}"
 
-
 async def ollama_health() -> dict:
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
@@ -159,20 +112,40 @@ async def ollama_health() -> dict:
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
-
-# ──────────────────────────────────────────────
-# PEER DISCOVERY & HEARTBEAT
-# ──────────────────────────────────────────────
-
-async def announce_to_peer(endpoint: str):
-    """Invia NODE_ANNOUNCE a un peer e riceve la sua peer list (PEX).
-    Supporta endpoint sia in formato 'host:porta' che URL completo 'https://...'.
+# ── REGISTRAZIONE AL CONTROL-PLANE ────────────────────────
+async def register_to_control_plane():
+    """Chiama POST /mesh/announce sul control-plane con il proprio profilo.
+    Funziona sia per nodi locali (stesso Docker) che remoti (ngrok/IP).
     """
+    if not CONTROL_PLANE_URL:
+        return
+    payload = {
+        "node_id":      NODE_ID,
+        "public_key":   NODE_PUBKEY,
+        "tier":         NODE_PROFILE["tier"],
+        "endpoint":     NODE_ADVERTISED_ENDPOINT,
+        "capabilities": NODE_PROFILE["capabilities"],
+        "vram_gb":      VRAM_GB,
+        "version":      NODE_PROFILE["version"],
+        "uptime_s":     int(time.time() - _boot_time),
+        "peers_active": len([p for p in _peers.values() if p["status"] == "active"]),
+    }
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            r = await client.post(f"{CONTROL_PLANE_URL}/mesh/announce", json=payload)
+            if r.status_code == 200:
+                print(f"[NODE:{NODE_ID[:10]}] registered to control-plane {CONTROL_PLANE_URL}")
+            else:
+                print(f"[NODE:{NODE_ID[:10]}] control-plane announce HTTP {r.status_code}")
+    except Exception as e:
+        print(f"[NODE:{NODE_ID[:10]}] control-plane announce failed: {e}")
+
+# ── PEER DISCOVERY & HEARTBEAT ────────────────────────────
+async def announce_to_peer(endpoint: str):
     base_url = peer_to_url(endpoint)
     try:
         payload = build_signed_payload({
             "type":         "NODE_ANNOUNCE",
-            # Pubblicizza il nostro endpoint pubblico (ngrok o host:porta)
             "endpoint":     NODE_ADVERTISED_ENDPOINT,
             "tier":         NODE_PROFILE["tier"],
             "capabilities": NODE_PROFILE["capabilities"],
@@ -183,13 +156,12 @@ async def announce_to_peer(endpoint: str):
             r = await client.post(f"{base_url}/announce", json=payload)
             if r.status_code == 200:
                 data = r.json()
-                # PEX: registra i peer che il peer conosce
                 for peer in data.get("peers", []):
                     register_peer(peer)
                 register_peer({
                     "node_id":      data.get("node_id"),
                     "pubkey":       data.get("pubkey", ""),
-                    "endpoint":     endpoint,   # mantieni l'endpoint originale (URL completo)
+                    "endpoint":     endpoint,
                     "tier":         data.get("tier", "leaf"),
                     "capabilities": data.get("capabilities", []),
                 })
@@ -197,56 +169,48 @@ async def announce_to_peer(endpoint: str):
     except Exception as e:
         print(f"[NODE:{NODE_ID[:10]}] announce failed → {endpoint}: {e}")
 
-
 def heartbeat_loop():
     time.sleep(5)
 
     async def _boot():
+        # Annuncio ai boot peers P2P
         for peer_endpoint in BOOT_PEERS:
             await announce_to_peer(peer_endpoint)
+        # Registrazione al control-plane
+        await register_to_control_plane()
 
     asyncio.run(_boot())
 
     while True:
         time.sleep(HEARTBEAT_EVERY)
-        NODE_PROFILE["tier"] = calculate_tier(
-            VRAM_GB,
-            time.time() - _boot_time
-        )
+        NODE_PROFILE["tier"] = calculate_tier(VRAM_GB, time.time() - _boot_time)
         prune_stale_peers()
 
         async def _hb():
             active = [p for p in _peers.values() if p["status"] == "active"]
             for peer in active:
                 await announce_to_peer(peer["endpoint"])
+            # Re-registrazione periodica al control-plane
+            await register_to_control_plane()
 
         asyncio.run(_hb())
 
-
-# ──────────────────────────────────────────────
-# STARTUP
-# ──────────────────────────────────────────────
-
+# ── STARTUP ───────────────────────────────────────────────
 @app.on_event("startup")
 async def startup_event():
     t = threading.Thread(target=heartbeat_loop, daemon=True)
     t.start()
     print(f"[NODE:{NODE_ID[:10]}] started")
     print(f"[NODE:{NODE_ID[:10]}] tier={NODE_PROFILE['tier']}")
-    print(f"[NODE:{NODE_ID[:10]}] local={_local_endpoint}")
     print(f"[NODE:{NODE_ID[:10]}] advertised={NODE_ADVERTISED_ENDPOINT}")
+    print(f"[NODE:{NODE_ID[:10]}] control-plane={CONTROL_PLANE_URL or 'not set'}")
     if BOOT_PEERS:
         print(f"[NODE:{NODE_ID[:10]}] boot_peers={BOOT_PEERS}")
 
-
-# ──────────────────────────────────────────────
-# ENDPOINTS
-# ──────────────────────────────────────────────
-
+# ── ENDPOINTS ─────────────────────────────────────────────
 @app.get("/health")
 def health():
     return {"status": "ok", "node_id": NODE_ID, "tier": NODE_PROFILE["tier"]}
-
 
 @app.get("/identity")
 def get_identity():
@@ -259,7 +223,6 @@ def get_identity():
         "endpoint":     NODE_ADVERTISED_ENDPOINT,
         "vram_gb":      VRAM_GB,
     }
-
 
 @app.get("/status")
 def status():
@@ -277,7 +240,6 @@ def status():
         "peers_total":  len(_peers),
         "running":      True,
     }
-
 
 @app.get("/peers")
 def get_peers():
@@ -298,13 +260,11 @@ def get_peers():
         ]
     }
 
-
 @app.post("/announce")
 async def announce(message: dict):
     valid = verify_message(message)
     if not valid:
         return {"error": "invalid signature", "accepted": False}
-
     register_peer({
         "node_id":      message.get("node_id"),
         "pubkey":       message.get("pubkey", ""),
@@ -312,9 +272,7 @@ async def announce(message: dict):
         "tier":         message.get("tier", "leaf"),
         "capabilities": message.get("capabilities", []),
     })
-
     print(f"[NODE:{NODE_ID[:10]}] accepted announce from {message.get('node_id', '')[:10]}")
-
     prune_stale_peers()
     return {
         "accepted":     True,
@@ -323,21 +281,15 @@ async def announce(message: dict):
         "tier":         NODE_PROFILE["tier"],
         "capabilities": NODE_PROFILE["capabilities"],
         "peers": [
-            {
-                "node_id":  p["node_id"],
-                "endpoint": p["endpoint"],
-                "tier":     p.get("tier", "leaf"),
-            }
+            {"node_id": p["node_id"], "endpoint": p["endpoint"], "tier": p.get("tier", "leaf")}
             for p in _peers.values() if p["status"] == "active"
         ]
     }
-
 
 @app.post("/verify")
 async def verify_incoming(message: dict):
     valid = verify_message(message)
     return {"valid": valid, "node_id": message.get("node_id")}
-
 
 @app.post("/execute")
 async def execute_task(task: dict):
@@ -346,25 +298,16 @@ async def execute_task(task: dict):
     model   = task.get("model") or task.get("payload", {}).get("model") or DEFAULT_MODEL
     print(f"[NODE:{NODE_ID[:10]}] execute task={task_id} model={model}")
     response_text = await ollama_generate(prompt, model)
-    return {
-        "node_id":  NODE_ID,
-        "task_id":  task_id,
-        "status":   "done",
-        "model":    model,
-        "response": response_text,
-    }
-
+    return {"node_id": NODE_ID, "task_id": task_id, "status": "done", "model": model, "response": response_text}
 
 @app.get("/ollama/health")
 async def check_ollama():
     return await ollama_health()
 
-
 @app.get("/ollama/models")
 async def list_models():
     h = await ollama_health()
     return {"models": h.get("models", [])} if h["ok"] else {"error": h.get("error")}
-
 
 if __name__ == "__main__":
     import uvicorn
