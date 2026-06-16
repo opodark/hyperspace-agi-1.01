@@ -29,25 +29,29 @@ NODE_PUBKEY  = _identity["public_key"]
 _private_key = _identity["_private_key"]
 
 # ──────────────────────────────────────────────
-# CONFIG (da env — nessun valore critico hardcodato)
+# CONFIG
 # ──────────────────────────────────────────────
 NODE_HOSTNAME    = os.getenv("NODE_HOSTNAME", "localhost")
 NODE_PORT        = int(os.getenv("NODE_PORT", 8084))
 OLLAMA_URL       = os.getenv("OLLAMA_URL", "http://ollama:11434")
 DEFAULT_MODEL    = os.getenv("OLLAMA_MODEL", "phi3")
 HEARTBEAT_EVERY  = int(os.getenv("HEARTBEAT_EVERY", 15))
-# Lista peer iniziali separati da virgola, es: "node-1:8084,node-2:8084"
-BOOT_PEERS       = [p.strip() for p in os.getenv("BOOT_PEERS", "").split(",") if p.strip()]
+
+# PUBLIC_ENDPOINT: URL pubblico con cui questo nodo è raggiungibile dagli altri.
+# Se il nodo è dietro ngrok: PUBLIC_ENDPOINT=https://xxxx.ngrok-free.app
+# Se locale nella stessa rete Docker: lascia vuoto (usa NODE_HOSTNAME:NODE_PORT)
+PUBLIC_ENDPOINT = os.getenv("PUBLIC_ENDPOINT", "").strip().rstrip("/")
+
+# BOOT_PEERS: peer iniziali, separati da virgola.
+# Supporta sia 'host:porta' che URL completi 'https://xxxx.ngrok-free.app'
+BOOT_PEERS = [p.strip().rstrip("/") for p in os.getenv("BOOT_PEERS", "").split(",") if p.strip()]
 
 _boot_time = time.time()
 
 # ──────────────────────────────────────────────
 # TIER CALCULATION
-# Nessun tier hardcodato: calcolato da capabilities + risorse
 # ──────────────────────────────────────────────
-
 def detect_vram_gb() -> float:
-    """Rileva VRAM disponibile. Restituisce 0.0 se non disponibile o non rilevabile."""
     try:
         import subprocess
         out = subprocess.check_output(
@@ -62,7 +66,7 @@ def detect_vram_gb() -> float:
 def calculate_tier(vram_gb: float, uptime_s: float, reputation: float = 0.5) -> str:
     root_score = (
         min(uptime_s / 604800, 1.0) * 25 +
-        0.5 * 35 +           # reachability placeholder — Fase 2
+        0.5 * 35 +
         reputation  * 40
     )
     if root_score >= 85.0:
@@ -77,11 +81,17 @@ NODE_CAPABILITIES = ["execute"]
 if VRAM_GB > 0 or os.getenv("OLLAMA_URL"):
     NODE_CAPABILITIES.append("ollama")
 
+# L'endpoint pubblicato agli altri nodi:
+# - se PUBLIC_ENDPOINT è settato (es. URL ngrok) lo usa direttamente
+# - altrimenti usa HOST:PORTA (per nodi nella stessa rete Docker/LAN)
+_local_endpoint = f"{NODE_HOSTNAME}:{NODE_PORT}"
+NODE_ADVERTISED_ENDPOINT = PUBLIC_ENDPOINT if PUBLIC_ENDPOINT else _local_endpoint
+
 NODE_PROFILE = {
     "node_id":      NODE_ID,
     "pubkey":       NODE_PUBKEY,
     "tier":         calculate_tier(VRAM_GB, 0),
-    "endpoint":     f"{NODE_HOSTNAME}:{NODE_PORT}",
+    "endpoint":     NODE_ADVERTISED_ENDPOINT,
     "capabilities": NODE_CAPABILITIES,
     "vram_gb":      VRAM_GB,
     "version":      "0.2.0",
@@ -89,7 +99,6 @@ NODE_PROFILE = {
 
 # ──────────────────────────────────────────────
 # PEER REGISTRY LOCALE
-# Niente authority centrale: ogni nodo conosce solo i suoi peer
 # ──────────────────────────────────────────────
 _peers: dict = {}   # node_id -> peer_info
 
@@ -120,6 +129,17 @@ def build_signed_payload(data: dict) -> dict:
     return sign_message(payload, _private_key)
 
 
+def peer_to_url(endpoint: str) -> str:
+    """Normalizza un endpoint in URL completo.
+    - 'host:porta'  -> 'http://host:porta'
+    - 'https://...' -> invariato
+    - 'http://...'  -> invariato
+    """
+    if endpoint.startswith("http://") or endpoint.startswith("https://"):
+        return endpoint.rstrip("/")
+    return f"http://{endpoint}"
+
+
 async def ollama_generate(prompt: str, model: str = DEFAULT_MODEL) -> str:
     payload = {"model": model, "prompt": prompt, "stream": False}
     try:
@@ -145,18 +165,22 @@ async def ollama_health() -> dict:
 # ──────────────────────────────────────────────
 
 async def announce_to_peer(endpoint: str):
-    """Invia NODE_ANNOUNCE a un peer e riceve la sua peer list (PEX)."""
+    """Invia NODE_ANNOUNCE a un peer e riceve la sua peer list (PEX).
+    Supporta endpoint sia in formato 'host:porta' che URL completo 'https://...'.
+    """
+    base_url = peer_to_url(endpoint)
     try:
         payload = build_signed_payload({
             "type":         "NODE_ANNOUNCE",
-            "endpoint":     NODE_PROFILE["endpoint"],
+            # Pubblicizza il nostro endpoint pubblico (ngrok o host:porta)
+            "endpoint":     NODE_ADVERTISED_ENDPOINT,
             "tier":         NODE_PROFILE["tier"],
             "capabilities": NODE_PROFILE["capabilities"],
             "version":      NODE_PROFILE["version"],
             "timestamp":    time.time(),
         })
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            r = await client.post(f"http://{endpoint}/announce", json=payload)
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            r = await client.post(f"{base_url}/announce", json=payload)
             if r.status_code == 200:
                 data = r.json()
                 # PEX: registra i peer che il peer conosce
@@ -165,7 +189,7 @@ async def announce_to_peer(endpoint: str):
                 register_peer({
                     "node_id":      data.get("node_id"),
                     "pubkey":       data.get("pubkey", ""),
-                    "endpoint":     endpoint,
+                    "endpoint":     endpoint,   # mantieni l'endpoint originale (URL completo)
                     "tier":         data.get("tier", "leaf"),
                     "capabilities": data.get("capabilities", []),
                 })
@@ -175,8 +199,6 @@ async def announce_to_peer(endpoint: str):
 
 
 def heartbeat_loop():
-    """Boot: announce a tutti i BOOT_PEERS. Poi heartbeat periodico."""
-    # Attende qualche secondo per lasciar partire gli altri container
     time.sleep(5)
 
     async def _boot():
@@ -209,7 +231,12 @@ def heartbeat_loop():
 async def startup_event():
     t = threading.Thread(target=heartbeat_loop, daemon=True)
     t.start()
-    print(f"[NODE:{NODE_ID[:10]}] started — tier={NODE_PROFILE['tier']} — endpoint={NODE_PROFILE['endpoint']}")
+    print(f"[NODE:{NODE_ID[:10]}] started")
+    print(f"[NODE:{NODE_ID[:10]}] tier={NODE_PROFILE['tier']}")
+    print(f"[NODE:{NODE_ID[:10]}] local={_local_endpoint}")
+    print(f"[NODE:{NODE_ID[:10]}] advertised={NODE_ADVERTISED_ENDPOINT}")
+    if BOOT_PEERS:
+        print(f"[NODE:{NODE_ID[:10]}] boot_peers={BOOT_PEERS}")
 
 
 # ──────────────────────────────────────────────
@@ -229,7 +256,7 @@ def get_identity():
         "tier":         NODE_PROFILE["tier"],
         "version":      NODE_PROFILE["version"],
         "capabilities": NODE_PROFILE["capabilities"],
-        "endpoint":     NODE_PROFILE["endpoint"],
+        "endpoint":     NODE_ADVERTISED_ENDPOINT,
         "vram_gb":      VRAM_GB,
     }
 
@@ -242,7 +269,7 @@ def status():
         "public_key":   NODE_PUBKEY,
         "tier":         NODE_PROFILE["tier"],
         "version":      NODE_PROFILE["version"],
-        "endpoint":     NODE_PROFILE["endpoint"],
+        "endpoint":     NODE_ADVERTISED_ENDPOINT,
         "capabilities": NODE_PROFILE["capabilities"],
         "vram_gb":      VRAM_GB,
         "uptime_s":     int(time.time() - _boot_time),
@@ -254,7 +281,6 @@ def status():
 
 @app.get("/peers")
 def get_peers():
-    """Restituisce la peer list locale — usato per PEX."""
     prune_stale_peers()
     return {
         "node_id": NODE_ID,
@@ -275,7 +301,6 @@ def get_peers():
 
 @app.post("/announce")
 async def announce(message: dict):
-    """Riceve NODE_ANNOUNCE da un peer, verifica firma, registra peer, risponde con peer list."""
     valid = verify_message(message)
     if not valid:
         return {"error": "invalid signature", "accepted": False}
@@ -290,7 +315,6 @@ async def announce(message: dict):
 
     print(f"[NODE:{NODE_ID[:10]}] accepted announce from {message.get('node_id', '')[:10]}")
 
-    # Risponde con la propria peer list (PEX)
     prune_stale_peers()
     return {
         "accepted":     True,
@@ -311,7 +335,6 @@ async def announce(message: dict):
 
 @app.post("/verify")
 async def verify_incoming(message: dict):
-    """Verifica la firma ECDSA di un messaggio ricevuto."""
     valid = verify_message(message)
     return {"valid": valid, "node_id": message.get("node_id")}
 
