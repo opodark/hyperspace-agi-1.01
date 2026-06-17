@@ -1,7 +1,7 @@
 # control-plane/main.py
 # HyperSpace AGI v0.2 — Control Plane + Dashboard
 
-from flask import Flask, request, jsonify, Response
+from flask import Flask, request, jsonify, Response, redirect
 import os, threading, time, requests, json, uuid, random
 from datetime import datetime
 
@@ -11,6 +11,7 @@ app = Flask(__name__)
 NODE_ENDPOINTS = [e.strip() for e in os.getenv("NODE_ENDPOINTS","node:8084").split(",") if e.strip()]
 OLLAMA_URL    = os.getenv("OLLAMA_URL","http://host.docker.internal:11434")
 DEFAULT_MODEL = os.getenv("OLLAMA_MODEL","phi3")
+REGISTRY_URL       = os.getenv("REGISTRY_URL","http://registry:8086")
 _AUTHORITY_URL     = os.getenv("AUTHORITY_URL","http://authority:8080")
 _AUTHORITY_ENABLED = os.getenv("AUTHORITY_ENABLED","false").lower()=="true"
 LOG_LIMIT = 500
@@ -139,6 +140,23 @@ def get_node_peers(endpoint):
 
 @app.route('/hb/status')
 def hb_status(): return jsonify(dict(hb_state))
+
+# ── REGISTRY PROXY ────────────────────────────────────────────────────────────
+@app.route('/registry/nodes')
+def registry_nodes():
+    try:
+        r=requests.get(f"{REGISTRY_URL}/nodes",timeout=5)
+        return jsonify(r.json())
+    except Exception as e:
+        return jsonify({"error":str(e),"registry_url":REGISTRY_URL}), 503
+
+@app.route('/registry/health')
+def registry_health():
+    try:
+        r=requests.get(f"{REGISTRY_URL}/health",timeout=3)
+        return jsonify({"ok":r.status_code==200,"status":r.status_code})
+    except Exception as e:
+        return jsonify({"ok":False,"error":str(e)}), 503
 
 # ── CONFIG ────────────────────────────────────────────────────────────────────
 @app.route('/config/advanced')
@@ -324,8 +342,6 @@ def heartbeat_loop():
         time.sleep(15)
 
 # ── DASHBOARD ─────────────────────────────────────────────────────────────────
-# HTML served as a raw Response to avoid Python interpreting JS unicode escapes
-# inside the triple-quoted string (which caused SyntaxError in the browser).
 _DASHBOARD_HTML = (
     '<!DOCTYPE html>'
     '<html lang="it" data-theme="dark">'
@@ -335,8 +351,8 @@ _DASHBOARD_HTML = (
     '<title>HyperSpace AGI v0.2</title>'
     '<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">'
     '<style>'
-    ':root,[data-theme="dark"]{--bg:#0b0c0e;--surface:#131518;--surface2:#191c21;--surface3:#21252d;--border:#272b33;--divider:#1c1f26;--text:#c8cdd6;--text-muted:#636a78;--text-faint:#353a44;--primary:#4f98a3;--primary-h:#2d7d8a;--primary-bg:rgba(79,152,163,.12);--success:#6daa45;--success-bg:rgba(109,170,69,.12);--warning:#e8af34;--warning-bg:rgba(232,175,52,.10);--error:#dd6974;--error-bg:rgba(221,105,116,.12);--info:#5591c7;--info-bg:rgba(85,145,199,.12);--dream:#a86fdf;--dream-bg:rgba(168,111,223,.12);--chat:#fdab43;--chat-bg:rgba(253,171,67,.10);--root:#f06292;--hub:#4dd0e1;--leaf:#81c784;--font-mono:\'JetBrains Mono\',monospace;--font-body:\'Inter\',sans-serif;--radius:5px;--radius-lg:9px;--tr:160ms cubic-bezier(.16,1,.3,1)}'
-    '[data-theme="light"]{--bg:#f0f1f4;--surface:#fff;--surface2:#f6f7fa;--surface3:#eaecf0;--border:#d8dbe2;--text:#191c22;--text-muted:#636a78;--text-faint:#b0b8c8;--primary:#016970;--primary-h:#014f55;--primary-bg:rgba(1,105,112,.08);--success:#3a6e1a;--success-bg:rgba(58,110,26,.08);--warning:#9a6800;--error:#a12c3a;--error-bg:rgba(161,44,58,.08);--info:#225f99;--info-bg:rgba(34,95,153,.08);--dream:#6b30b5;--dream-bg:rgba(107,48,181,.08);--chat:#b56200;--chat-bg:rgba(181,98,0,.08)}'
+    ':root,[data-theme="dark"]{--bg:#0b0c0e;--surface:#131518;--surface2:#191c21;--surface3:#21252d;--border:#272b33;--divider:#1c1f26;--text:#c8cdd6;--text-muted:#636a78;--text-faint:#353a44;--primary:#4f98a3;--primary-h:#2d7d8a;--primary-bg:rgba(79,152,163,.12);--success:#6daa45;--success-bg:rgba(109,170,69,.12);--warning:#e8af34;--warning-bg:rgba(232,175,52,.10);--error:#dd6974;--error-bg:rgba(221,105,116,.12);--info:#5591c7;--info-bg:rgba(85,145,199,.12);--dream:#a86fdf;--dream-bg:rgba(168,111,223,.12);--chat:#fdab43;--chat-bg:rgba(253,171,67,.10);--root:#f06292;--hub:#4dd0e1;--leaf:#81c784;--reg:#c49a38;--reg-bg:rgba(196,154,56,.12);--font-mono:\'JetBrains Mono\',monospace;--font-body:\'Inter\',sans-serif;--radius:5px;--radius-lg:9px;--tr:160ms cubic-bezier(.16,1,.3,1)}'
+    '[data-theme="light"]{--bg:#f0f1f4;--surface:#fff;--surface2:#f6f7fa;--surface3:#eaecf0;--border:#d8dbe2;--text:#191c22;--text-muted:#636a78;--text-faint:#b0b8c8;--primary:#016970;--primary-h:#014f55;--primary-bg:rgba(1,105,112,.08);--success:#3a6e1a;--success-bg:rgba(58,110,26,.08);--warning:#9a6800;--error:#a12c3a;--error-bg:rgba(161,44,58,.08);--info:#225f99;--info-bg:rgba(34,95,153,.08);--dream:#6b30b5;--dream-bg:rgba(107,48,181,.08);--chat:#b56200;--chat-bg:rgba(181,98,0,.08);--reg:#7a5c00;--reg-bg:rgba(122,92,0,.08)}'
     '*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}'
     'html{font-size:13px;-webkit-font-smoothing:antialiased}'
     'body{font-family:var(--font-body);background:var(--bg);color:var(--text);min-height:100vh;display:grid;grid-template-rows:auto auto 1fr}'
@@ -378,6 +394,7 @@ _DASHBOARD_HTML = (
     '.btn-success{background:var(--success-bg);color:var(--success)}'
     '.btn-dream{background:var(--dream-bg);color:var(--dream)}'
     '.btn-chat{background:var(--chat-bg);color:var(--chat)}'
+    '.btn-reg{background:var(--reg-bg);color:var(--reg)}'
     '.btn-sm{padding:4px 10px;font-size:.72rem}'
     '.inp{background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:7px 11px;color:var(--text);font-size:.8rem;font-family:var(--font-body);transition:border-color var(--tr);width:100%}'
     '.inp:focus{outline:none;border-color:var(--primary)}'
@@ -405,6 +422,25 @@ _DASHBOARD_HTML = (
     '.node-peers{margin-top:8px;font-size:.65rem;color:var(--text-muted);border-top:1px solid var(--divider);padding-top:7px}'
     '.peer-tag{display:inline-flex;background:var(--surface2);border:1px solid var(--border);border-radius:3px;padding:1px 6px;font-family:var(--font-mono);font-size:.6rem;margin:2px 2px 0 0;color:var(--text-muted)}'
     '.nodes-empty{padding:40px;text-align:center;color:var(--text-faint);font-size:.8rem}'
+    /* registry panel styles */
+    '.reg-header{display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap}'
+    '.reg-status-pill{display:flex;align-items:center;gap:6px;background:var(--surface2);border:1px solid var(--border);border-radius:99px;padding:4px 12px;font-size:.7rem;font-family:var(--font-mono)}'
+    '.reg-dot{width:7px;height:7px;border-radius:50%;background:var(--text-faint);flex-shrink:0}'
+    '.reg-dot.ok{background:var(--success);box-shadow:0 0 5px var(--success)}'
+    '.reg-dot.err{background:var(--error)}'
+    '.reg-table{width:100%;border-collapse:collapse;font-size:.75rem}'
+    '.reg-table th{text-align:left;padding:7px 12px;font-size:.62rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--text-muted);border-bottom:1px solid var(--divider);background:var(--surface2)}'
+    '.reg-table td{padding:9px 12px;border-bottom:1px solid var(--divider);vertical-align:middle}'
+    '.reg-table tr:last-child td{border-bottom:none}'
+    '.reg-table tr:hover td{background:var(--surface2)}'
+    '.reg-id{font-family:var(--font-mono);font-size:.68rem;color:var(--primary);word-break:break-all}'
+    '.reg-ep{font-family:var(--font-mono);font-size:.68rem;color:var(--text-muted)}'
+    '.reg-ts{font-family:var(--font-mono);font-size:.65rem;color:var(--text-faint)}'
+    '.reg-empty{padding:40px;text-align:center;color:var(--text-faint);font-size:.8rem}'
+    '.reg-stat-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:10px;margin-bottom:14px}'
+    '.reg-stat{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);padding:12px 14px}'
+    '.reg-stat-val{font-family:var(--font-mono);font-size:1.6rem;font-weight:700;color:var(--reg);line-height:1}'
+    '.reg-stat-label{font-size:.62rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.07em;margin-top:4px}'
     '.task-form{display:grid;grid-template-columns:1fr 1fr;gap:10px}'
     '@media(max-width:640px){.task-form{grid-template-columns:1fr}}'
     '.task-status-label{font-size:.75rem;color:var(--text-muted)}'
@@ -489,6 +525,7 @@ _DASHBOARD_HTML = (
     '  </div>'
     '  <nav>'
     '    <button class="active" onclick="showPanel(\'nodes\',this)">&#127760; Mesh Nodes</button>'
+    '    <button onclick="showPanel(\'registry\',this)">&#128196; Registry</button>'
     '    <button onclick="showPanel(\'tasks\',this)">&#128640; Tasks</button>'
     '    <button onclick="showPanel(\'logs\',this)">&#128203; Logs</button>'
     '    <button onclick="showPanel(\'diag\',this)">&#128295; Diagnostics</button>'
@@ -509,11 +546,36 @@ _DASHBOARD_HTML = (
     '  <span class="hb-live" style="margin-left:auto">&#9679; LIVE</span>'
     '</div>'
     '<main>'
+
+    /* ── MESH NODES PANEL ── */
     '<div id="panel-nodes" class="panel active">'
     '  <div class="sec-title">Mesh Nodes &#8212; Live</div>'
     '  <div class="row"><button class="btn btn-ghost btn-sm" onclick="refreshNodes()">&#8634; Refresh</button><span style="font-size:.7rem;color:var(--text-muted)" id="nodesCount"></span></div>'
     '  <div class="nodes-grid" id="nodesGrid"><div class="nodes-empty">Loading nodes&#8230;</div></div>'
     '</div>'
+
+    /* ── REGISTRY PANEL ── */
+    '<div id="panel-registry" class="panel">'
+    '  <div class="sec-title">Registry &#8212; Nodi Registrati</div>'
+    '  <div class="reg-header">'
+    '    <div class="reg-status-pill"><span class="reg-dot" id="regDot"></span><span id="regStatusLabel">Checking&#8230;</span></div>'
+    '    <button class="btn btn-reg btn-sm" onclick="refreshRegistry()">&#8634; Refresh</button>'
+    '    <span style="font-size:.68rem;color:var(--text-muted);margin-left:auto" id="regLastUpdate"></span>'
+    '  </div>'
+    '  <div class="reg-stat-grid">'
+    '    <div class="reg-stat"><div class="reg-stat-val" id="regTotal">&#8212;</div><div class="reg-stat-label">Nodi registrati</div></div>'
+    '    <div class="reg-stat"><div class="reg-stat-val" id="regActive">&#8212;</div><div class="reg-stat-label">Attivi</div></div>'
+    '    <div class="reg-stat"><div class="reg-stat-val" id="regTiers">&#8212;</div><div class="reg-stat-label">Tier distinti</div></div>'
+    '  </div>'
+    '  <div class="card" style="padding:0;overflow:hidden">'
+    '    <table class="reg-table">'
+    '      <thead><tr><th>Node ID</th><th>Endpoint</th><th>Tier</th><th>Stato</th><th>Versione</th><th>Uptime</th><th>Last Seen</th></tr></thead>'
+    '      <tbody id="regTableBody"><tr><td colspan="7" class="reg-empty">Caricamento&#8230;</td></tr></tbody>'
+    '    </table>'
+    '  </div>'
+    '</div>'
+
+    /* ── TASKS PANEL ── */
     '<div id="panel-tasks" class="panel">'
     '  <div class="sec-title">Task History</div>'
     '  <div class="card">'
@@ -535,6 +597,8 @@ _DASHBOARD_HTML = (
     '  </div>'
     '  <div id="taskHistory"><div class="tasks-empty">Nessun task ancora.</div></div>'
     '</div>'
+
+    /* ── LOGS PANEL ── */
     '<div id="panel-logs" class="panel">'
     '  <div class="sec-title">Log Viewer</div>'
     '  <div class="log-tabs">'
@@ -559,10 +623,13 @@ _DASHBOARD_HTML = (
     '    <div class="log-footer"><span class="pulse"></span><span id="logCount">0 events</span><span style="margin-left:auto" id="logLast">&#8212;</span></div>'
     '  </div>'
     '</div>'
+
+    /* ── DIAGNOSTICS PANEL ── */
     '<div id="panel-diag" class="panel">'
     '  <div class="sec-title">Diagnostics</div>'
     '  <div class="diag-grid">'
     '    <div class="card"><div class="card-title">&#128225; Mesh Nodes Raw</div><button class="btn btn-ghost btn-sm" onclick="diagMeshNodes()">Fetch</button><div class="diag-out" id="dMesh">&#8212;</div></div>'
+    '    <div class="card"><div class="card-title">&#128196; Registry Raw</div><button class="btn btn-reg btn-sm" onclick="diagRegistry()">Fetch</button><div class="diag-out" id="dReg">&#8212;</div></div>'
     '    <div class="card"><div class="card-title">&#129302; Ollama Status</div><button class="btn btn-success btn-sm" onclick="checkOllama()">Check</button><div class="diag-out" id="dOllama">&#8212;</div></div>'
     '    <div class="card"><div class="card-title">&#128173; Simulate Dream</div>'
     '      <div style="display:flex;gap:7px;flex-wrap:wrap;margin-bottom:8px"><input id="drNode" class="inp inp-mono" placeholder="node-id" style="width:120px"/><input id="drText" class="inp" placeholder="Dream text..." style="flex:1"/></div>'
@@ -576,6 +643,8 @@ _DASHBOARD_HTML = (
     '    <div class="card"><div class="card-title">&#128202; Ping All Nodes</div><button class="btn btn-ghost btn-sm" onclick="pingAll()">Ping All</button><div class="diag-out" id="dPing">&#8212;</div></div>'
     '  </div>'
     '</div>'
+
+    /* ── SETUP PANEL ── */
     '<div id="panel-setup" class="panel">'
     '  <div class="sec-title">Setup</div>'
     '  <div class="card"><div class="card-title">&#129302; Ollama</div>'
@@ -621,6 +690,7 @@ _DASHBOARD_HTML = (
     '  <div id="saveMsg"></div>'
     '</div>'
     '</main>'
+
     '<div class="modal-overlay" id="ollamaModal" onclick="if(event.target===this)closeModal()">'
     '  <div class="modal">'
     '    <div class="modal-title"><span class="ollama-dot" id="modalDot"></span>&#129302; Ollama<button class="modal-close" onclick="closeModal()">&#10005; Close</button></div>'
@@ -630,6 +700,7 @@ _DASHBOARD_HTML = (
     '    <button class="btn btn-ghost btn-sm" style="margin-top:8px" onclick="checkOllamaModal()">&#8634; Refresh</button>'
     '  </div>'
     '</div>'
+
     '<script>'
     '(function(){var r=document.documentElement,btn=document.getElementById("themeBtn");var d="dark";r.setAttribute("data-theme",d);btn.addEventListener("click",function(){d=d==="dark"?"light":"dark";r.setAttribute("data-theme",d);});})();'
     'function tick(){document.getElementById("clock").textContent=new Date().toISOString().replace("T"," ").slice(0,19)+" UTC";}setInterval(tick,1000);tick();'
@@ -639,6 +710,7 @@ _DASHBOARD_HTML = (
     '  document.getElementById("panel-"+name).classList.add("active");'
     '  btn.classList.add("active");'
     '  if(name==="nodes")refreshNodes();'
+    '  if(name==="registry")refreshRegistry();'
     '  if(name==="tasks")refreshTaskHistory();'
     '  if(name==="logs")refreshLogs();'
     '  if(name==="setup")loadCfg();'
@@ -651,8 +723,51 @@ _DASHBOARD_HTML = (
     'async function refreshNodes(){try{var nodes=await(await fetch("/mesh/nodes")).json();var grid=document.getElementById("nodesGrid");document.getElementById("nodesCount").textContent=nodes.length+" node"+(nodes.length!==1?"s":"");if(!nodes.length){grid.innerHTML=\'<div class="nodes-empty">No nodes discovered yet.</div>\';return;}grid.innerHTML=nodes.map(function(n){var nid=n.node_id?n.node_id.slice(0,16)+"...":n.endpoint||"?";var tier=n.tier||"leaf";var uptime=n.uptime_s?formatUptime(n.uptime_s):"?";var caps=(n.capabilities||[]).join(", ")||"?";var ver=n.version||"?";var ep=n.endpoint||"";return\'<div class="node-card"><div class="nc-header"><span class="node-status-dot \'+statusDotClass(n.status)+\'"></span><span class="node-id" title="\'+escH(n.node_id||\'\')+\'">&#128187; \'+escH(nid)+\'</span><span class="tier-badge \'+tierClass(tier)+\'">\'+tier+\'</span></div><div class="node-meta"><span class="nm-label">Endpoint</span><span class="nm-val" title="\'+escH(ep)+\'">\'+escH(ep.replace("https://","").slice(0,30))+\'</span><span class="nm-label">Version</span><span class="nm-val">\'+escH(ver)+\'</span><span class="nm-label">Uptime</span><span class="nm-val">\'+uptime+\'</span><span class="nm-label">Peers</span><span class="nm-val">\'+( n.peers_active||0)+\' active</span><span class="nm-label">Caps</span><span class="nm-val">\'+escH(caps)+\'</span><span class="nm-label">VRAM</span><span class="nm-val">\'+( n.vram_gb||0)+\' GB</span></div><div class="node-peers"><span style="color:var(--text-faint);margin-right:4px">pubkey</span><span class="peer-tag" title="\'+escH(n.public_key||\'\')+\'">\'+escH((n.public_key||"").slice(0,20))+\'&hellip;</span></div></div>\';}).join("");}catch(e){document.getElementById("nodesGrid").innerHTML=\'<div class="nodes-empty">Error: \'+e.message+\'</div>\';}}'
     'setInterval(refreshNodes,15000);refreshNodes();'
     'function escH(s){return String(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");}'
-    'function statusBadge(s){var map={done:"ts-done",failed:"ts-failed",assigned:"ts-assigned",created:"ts-created"};var emoji={done:"&#10003;",failed:"&#10007;",assigned:"&#8987;",created:"&#9679;"};return\'<span class="task-status-badge \'+( map[s]||"ts-created")+\'">\'+( emoji[s]||"")+\' \'+s+\'</span>\';}'
-    'function renderTaskCard(t){var id=t.id||"?";var node=(t.node||"").slice(0,16);var model=(t.payload&&t.payload.model)||"?";var prompt=(t.payload&&t.payload.prompt)||"";var status=t.status||"created";var resp=(t.result&&t.result.response)||t.error||"";var isError=status==="failed"||resp.toLowerCase().indexOf("[ollama error]")===0;var responseHTML=resp?(isError?\'<div class="task-error-box">\'+escH(resp)+\'</div>\':\'<div class="task-response-box">\'+escH(resp)+\'</div>\'):\'<div style="color:var(--text-faint);font-size:.75rem">Nessuna risposta.</div>\';var ts=(t.completed_at||t.created_at||"").slice(0,19).replace("T"," ");return\'<div class="task-card"><div class="task-header" onclick="toggleTaskBody(\\\'tb-\'+escH(id)+\'\\\')">\'+statusBadge(status)+\'<span class="task-id">#\'+escH(id)+\'</span><span class="task-model-badge">\'+escH(model)+\'</span><span class="task-node" title="\'+escH(t.node||"")+\'">\'+( node?"&#128187; "+node+"...":"")+\'</span><span class="task-ts">\'+escH(ts)+\'</span></div><div class="task-body" id="tb-\'+escH(id)+\'"><div class="task-section"><div class="task-section-title">Prompt</div><div class="task-prompt-box">\'+( escH(prompt)||"<em>vuoto</em>")+\'</div></div><div class="task-section"><div class="task-section-title">Risposta</div>\'+responseHTML+\'</div></div></div>\';}'
+
+    /* ── REGISTRY JS ── */
+    'async function refreshRegistry(){'
+    '  try{'
+    '    var rh=await(await fetch("/registry/health")).json();'
+    '    var dot=document.getElementById("regDot"),lbl=document.getElementById("regStatusLabel");'
+    '    if(rh.ok){dot.className="reg-dot ok";lbl.textContent="Registry online";}else{dot.className="reg-dot err";lbl.textContent="Registry offline";}'
+    '  }catch(e){document.getElementById("regDot").className="reg-dot err";document.getElementById("regStatusLabel").textContent="Registry non raggiungibile";}'
+    '  try{'
+    '    var d=await(await fetch("/registry/nodes")).json();'
+    '    var nodes=Array.isArray(d)?d:(d.nodes||[]);'
+    '    document.getElementById("regTotal").textContent=nodes.length;'
+    '    var active=nodes.filter(function(n){return n.status==="active"||!n.status;}).length;'
+    '    document.getElementById("regActive").textContent=active;'
+    '    var tiers=new Set(nodes.map(function(n){return n.tier||"leaf";}));'
+    '    document.getElementById("regTiers").textContent=tiers.size;'
+    '    document.getElementById("regLastUpdate").textContent="Aggiornato "+new Date().toISOString().slice(11,19)+" UTC";'
+    '    var tbody=document.getElementById("regTableBody");'
+    '    if(!nodes.length){tbody.innerHTML=\'<tr><td colspan="7" class="reg-empty">Nessun nodo registrato.</td></tr>\';return;}'
+    '    tbody.innerHTML=nodes.map(function(n){'
+    '      var nid=escH((n.node_id||"?").slice(0,32));'
+    '      var ep=escH(n.endpoint||"—");'
+    '      var tier=n.tier||"leaf";'
+    '      var st=n.status||"unknown";'
+    '      var stColor=st==="active"?"var(--success)":st==="unreachable"?"var(--error)":"var(--text-faint)";'
+    '      var ver=escH(n.version||"—");'
+    '      var up=n.uptime_s?formatUptime(n.uptime_s):"—";'
+    '      var ls=n.last_seen?(n.last_seen.replace("T"," ").slice(0,19)):"—";'
+    '      return"<tr>"'
+    '        +"<td><span class=\'reg-id\' title=\'"+escH(n.node_id||"")+"\'>"+(n.node_id||"?").slice(0,20)+"&hellip;</span></td>"'
+    '        +"<td><span class=\'reg-ep\'>"+ep+"</span></td>"'
+    '        +"<td><span class=\'tier-badge "+tierClass(tier)+"\'>"+tier+"</span></td>"'
+    '        +"<td><span style=\'color:"+stColor+";font-family:var(--font-mono);font-size:.68rem\'>"+st+"</span></td>"'
+    '        +"<td><span style=\'font-family:var(--font-mono);font-size:.68rem;color:var(--text-muted)\'>"+ver+"</span></td>"'
+    '        +"<td><span style=\'font-family:var(--font-mono);font-size:.68rem\'>"+up+"</span></td>"'
+    '        +"<td class=\'reg-ts\'>"+ls+"</td>"'
+    '        +"</tr>";'
+    '    }).join("");'
+    '  }catch(e){document.getElementById("regTableBody").innerHTML=\'<tr><td colspan="7" class="reg-empty">Errore: \'+e.message+\'</td></tr>\';}'
+    '}'
+    'setInterval(function(){var p=document.getElementById("panel-registry");if(p&&p.classList.contains("active"))refreshRegistry();},10000);'
+
+    'function statusBadge(s){var map={done:"ts-done",failed:"ts-failed",assigned:"ts-assigned",created:"ts-created"};var emoji={done:"&#10003;",failed:"&#10007;",assigned:"&#8987;",created:"&#9679;"};return\'<span class="task-status-badge \'+(map[s]||"ts-created")+\'">\'+(emoji[s]||"")+\' \'+s+\'</span>\';}'
+    'function renderTaskCard(t){var id=t.id||"?";var node=(t.node||"").slice(0,16);var model=(t.payload&&t.payload.model)||"?";var prompt=(t.payload&&t.payload.prompt)||"";var status=t.status||"created";var resp=(t.result&&t.result.response)||t.error||"";var isError=status==="failed"||resp.toLowerCase().indexOf("[ollama error]")===0;var responseHTML=resp?(isError?\'<div class="task-error-box">\'+escH(resp)+\'</div>\':\'<div class="task-response-box">\'+escH(resp)+\'</div>\'):\'<div style="color:var(--text-faint);font-size:.75rem">Nessuna risposta.</div>\';var ts=(t.completed_at||t.created_at||"").slice(0,19).replace("T"," ");return\'<div class="task-card"><div class="task-header" onclick="toggleTaskBody(\\\'tb-\'+escH(id)+\'\\\')\'+">"+'
+    'statusBadge(status)+\'<span class="task-id">#\'+escH(id)+\'</span><span class="task-model-badge">\'+escH(model)+\'</span><span class="task-node" title="\'+escH(t.node||"")+\'">\'+( node?"&#128187; "+node+"...":"")+\'</span><span class="task-ts">\'+escH(ts)+\'</span></div><div class="task-body" id="tb-\'+escH(id)+\'"><div class="task-section"><div class="task-section-title">Prompt</div><div class="task-prompt-box">\'+( escH(prompt)||"<em>vuoto</em>")+\'</div></div><div class="task-section"><div class="task-section-title">Risposta</div>\'+responseHTML+\'</div></div></div>\';}'
     'function toggleTaskBody(id){var el=document.getElementById(id);if(el)el.classList.toggle("open");}'
     'async function createTask(){var id=document.getElementById("tId").value.trim();var prompt=document.getElementById("tPrompt").value.trim();var model=document.getElementById("tModel").value.trim()||"phi3";if(!id){alert("Task ID obbligatorio");return;}document.getElementById("taskStatus").textContent="Creazione...";var r=await fetch("/task/create",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({task_id:id,prompt:prompt,model:model})});var d=await r.json();document.getElementById("taskStatus").textContent=d.message||"";refreshTaskHistory();}'
     'async function createAndAssign(){var id=document.getElementById("tId").value.trim();var prompt=document.getElementById("tPrompt").value.trim();var model=document.getElementById("tModel").value.trim()||"phi3";if(!id||!prompt){alert("Task ID e Prompt obbligatori");return;}document.getElementById("taskStatus").textContent="Esecuzione...";await fetch("/task/create",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({task_id:id,prompt:prompt,model:model})});var r=await fetch("/task/assign",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({task_id:id})});var d=await r.json();document.getElementById("taskStatus").textContent=d.error?"Errore: "+d.error:"Completato";refreshTaskHistory();}'
@@ -666,6 +781,7 @@ _DASHBOARD_HTML = (
     'async function clearLogs(){await fetch("/logs/clear",{method:"POST"});refreshLogs();}'
     'setInterval(refreshLogs,5000);'
     'async function diagMeshNodes(){document.getElementById("dMesh").textContent="...";var d=await(await fetch("/mesh/nodes")).json();document.getElementById("dMesh").textContent=JSON.stringify(d,null,2);}'
+    'async function diagRegistry(){document.getElementById("dReg").textContent="...";var d=await(await fetch("/registry/nodes")).json();document.getElementById("dReg").textContent=JSON.stringify(d,null,2);}'
     'async function checkOllama(){document.getElementById("dOllama").textContent="...";var d=await(await fetch("/ollama/status")).json();document.getElementById("dOllama").textContent=JSON.stringify(d,null,2);}'
     'async function checkHb(){var d=await(await fetch("/hb/status")).json();document.getElementById("dHb").textContent=JSON.stringify(d,null,2);}'
     'async function sendDream(){var node=document.getElementById("drNode").value.trim()||"node-sim";var sum=document.getElementById("drText").value.trim()||"Autonomous cycle";var r=await fetch("/logs/add",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({type:"dream",summary:sum,sourceNode:node,status:"info",detail:"Injected via Diagnostics"})});document.getElementById("dDream").textContent=JSON.stringify(await r.json(),null,2);}'
@@ -686,6 +802,10 @@ _DASHBOARD_HTML = (
     '</script>'
     '</body></html>'
 )
+
+@app.route('/')
+def index():
+    return redirect('/dashboard', code=302)
 
 @app.route('/dashboard')
 def dashboard():
