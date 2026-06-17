@@ -1,4 +1,4 @@
-# HyperSpace AGI v0.2
+# HyperSpace-AGI v1.01
 
 > Framework per agenti IA autonomi basati su SLM (Small Language Models), eseguiti localmente tramite Docker. Il motore di inferenza (Ollama o LM Studio) gira **sull'host**, non in Docker — più veloce, più leggero, accesso diretto alla GPU.
 
@@ -20,35 +20,35 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 Il setup guida la configurazione del backend LLM (Ollama o LM Studio) e avvia i container.
 
-**Dashboard:** http://localhost:8085/dashboard 
+**Dashboard:** http://localhost:8085/dashboard  
 **Node API:** http://localhost:8084/status
 
 ---
 
-## Architettura v0.2
+## Architettura
 
 ```
   HOST MACHINE
   ┌───────────────────────────────────────────────────────┐
-  │  Ollama (nativo) o LM Studio                       │
-  │  :11434 / :1234                                    │
+  │  Ollama (nativo) o LM Studio                          │
+  │  :11434 / :1234                                       │
   └───────────────────────────────────────────────────────┘
            ↑ host.docker.internal
   DOCKER
-  ┌─────────────┐   ┌─────────────────────────┐
-  │ control-plane │──┤        node (worker)        │
-  │    :8085      │   │ :8084  ECDSA identity  │
-  └─────────────┘   │ /status /peers /execute│
-                       └─────────────────────────┘
-         multi-machine: ogni host ha il suo node
-         i nodi si scoprono via BOOT_PEERS + PEX
+  ┌───────────────┐   ┌──────────────────────────┐
+  │ control-plane │───│       node               │
+  │    :8085      │   │ :8084  ECDSA identity    │
+  └───────────────┘   │ /status /peers /execute  │
+                      └──────────────────────────┘
+        multi-machine: ogni host ha il proprio node
+        i nodi si scoprono via BOOT_PEERS + PEX
 ```
 
 ### Principi chiave
 
 - **Mesh-first** — i nodi si scoprono e comunicano direttamente via `/peers` (PEX), senza registry centralizzato
-- **Identità crittografica** — ogni nodo genera un keypair ECDSA secp256k1 al primo avvio, `node_id = sha256(pubkey)[:40]`
-- **Ollama/LM Studio sull'host** — accesso diretto alla GPU, zero overhead Docker, modelli condivisi tra sessioni
+- **Identità crittografica** — ogni nodo genera un keypair ECDSA secp256k1 al primo avvio; `node_id = sha256(pubkey)[:40]`
+- **Ollama / LM Studio sull'host** — accesso diretto alla GPU, zero overhead Docker, modelli condivisi tra sessioni
 - **Authority legacy** — mantenuta nel codice ma disabilitata di default, nascosta dalla UI
 
 ---
@@ -91,17 +91,17 @@ Modelli consigliati per hardware consumer:
 hyperspace-agi-1.01/
 ├── node/                    # Worker node (FastAPI)
 ├── worker/                  # Worker legacy (FastAPI)
-├──── main.py                # API v0.2: /status /peers /peer/add /execute
-├── control-plane/          # Dashboard + orchestrazione (Flask)
-├──── main.py                # Dashboard mesh-first, authority nascosta
+├──── main.py                # API: /status /peers /peer/add /execute
+├── control-plane/           # Dashboard + orchestrazione (Flask)
+├──── main.py                # Dashboard mesh-first, Log Viewer, Advanced Setup
 ├── shared/
 ├──── identity.py            # ECDSA secp256k1: genera node_id, sign, verify
-├── authority/              # Registry legacy (mantenuto, non avviato di default)
-├── setup.sh                # Setup guidato macOS/Linux
-├── setup.ps1               # Setup guidato Windows
-├── docker-compose.prod.yml # Compose produzione (senza ollama)
-├── docker-compose.yml      # Compose sviluppo
-└── .env.example            # Template variabili
+├── authority/               # Registry legacy (mantenuto, non avviato di default)
+├── setup.sh                 # Setup guidato macOS/Linux
+├── setup.ps1                # Setup guidato Windows
+├── docker-compose.prod.yml  # Compose produzione (senza ollama)
+├── docker-compose.yml       # Compose sviluppo
+└── .env.example             # Template variabili
 ```
 
 ---
@@ -130,14 +130,28 @@ AUTHORITY_ENABLED=false
 
 ---
 
+## Come funziona la mesh al boot
+
+Quando un nodo si avvia, esegue i seguenti passi:
+
+1. **Genera l'identità** — `shared/identity.py` crea (o carica) il keypair ECDSA secp256k1; il `node_id` è derivato come `sha256(pubkey)[:40]`.
+2. **Legge `BOOT_PEERS`** — lista di peer iniziali in formato `ip:porta` da cui partire.
+3. **Connessione iniziale** — il nodo contatta ogni boot peer tramite `/peers` e riceve la lista dei nodi noti a quel peer.
+4. **PEX (Peer Exchange)** — la lista si propaga: ogni nodo condivide i propri peer con i nuovi arrivati, espandendo la vista della rete senza un registry centrale.
+5. **Heartbeat** — il control-plane interroga periodicamente tutti i `NODE_ENDPOINTS` per aggiornare lo stato della mesh nella dashboard.
+
+Questo schema consente a nuovi nodi di aggiungersi alla rete conoscendo solo un peer iniziale.
+
+---
+
 ## API Reference
 
-### Node / Worker (porta 8084)
+### Node (porta 8084)
 
 | Method | Path | Descrizione |
 |---|---|---|
 | GET | `/health` | Ping rapido + uptime |
-| GET | `/status` | Schema v0.2 completo (node_id, tier, peers, caps…) |
+| GET | `/status` | Schema completo (node_id, tier, peers, caps…) |
 | GET | `/identity` | Profilo pubblico immutabile |
 | GET | `/peers` | Lista peer noti con stato PEX |
 | POST | `/peer/add` | Registra un nuovo peer |
@@ -186,28 +200,53 @@ Dopo il boot i nodi si scambiano la lista peer via `/peers` (PEX leggero). Il co
 
 ---
 
+## Stato del progetto
+
+| Feature | Stato |
+|---|---|
+| Identità ECDSA secp256k1 | ✅ Implementato |
+| PEX gossip multi-macchina | ✅ Implementato |
+| Dashboard mesh + Log Viewer | ✅ Implementato |
+| Setup guidato (sh / ps1) | ✅ Implementato |
+| Advanced Setup + Secret rotation | ✅ Implementato (v1.01) |
+| Authority server | ⚠️ Legacy — disabilitato di default |
+| Firma inter-nodo in produzione | 🔲 Roadmap |
+| Tier dinamico leaf → hub | 🔲 Roadmap |
+| SQLite per persistenza log | 🔲 Roadmap |
+| JWT tra nodi | 🔲 Roadmap |
+| UI topologia grafo | 🔲 Roadmap |
+| Pull modello automatico | 🔲 Roadmap |
+
+---
+
 ## Changelog
 
-### v0.2 (Giugno 2026)
-- **Mesh-first**: discovery tramite `/peers` + PEX, no registry centralizzato
-- **Ollama/LM Studio sull'host**: rimosso container ollama dal default
-- **Setup guidato**: `setup.sh` (macOS/Linux) e `setup.ps1` (Windows) con install Ollama, pull modello, supporto LM Studio
-- **Dashboard rinnovata**: tab Mesh Nodes con card live per ogni nodo, tier badge, pubkey, uptime, peers
-- **Schema `/status` v0.2**: `peers_active`, `peers_known`, `capabilities`, `vram_gb`, `endpoint`
-- **Authority legacy**: mantenuta nel codice, nascosta dalla UI, disabilitata di default
-- **Identità ECDSA**: `node_id` derivato da keypair secp256k1 persistente
+### v1.01 (Giugno 2026) — versione corrente
+- **Log Viewer esteso**: tab Connection Tests, Node Communication, Dreams, Node Chats
+- **Advanced Setup**: gestione Secret, Authority Server, Mesh/MHT dalla UI
+- **Task UI**: create e assign task direttamente dalla dashboard
+- **Config avanzata**: salvataggio e rotazione shared secret dal control-plane
 
-### v1.01
-- Dashboard con Log Viewer, Diagnostics, Advanced Setup
-- Authority registry + heartbeat
-- Task create/assign UI
+### v1.0 (Giugno 2026)
+- Mesh stabile multi-macchina via BOOT_PEERS + PEX
+- Dashboard rinnovata con card live per ogni nodo
+- Schema `/status` con `peers_active`, `peers_known`, `capabilities`, `vram_gb`, `endpoint`
+
+### v0.9 (Giugno 2026)
+- Identità ECDSA secp256k1 persistente (`shared/identity.py`)
+- Primo prototipo PEX funzionante
+- Setup guidato `setup.sh` / `setup.ps1`
+
+### v0.8 (Giugno 2026)
+- Base Docker + Ollama
+- Primo node con `/execute` e `/status`
 
 ---
 
 ## Roadmap
 
 - [ ] Firma e verifica messaggi inter-nodo in produzione
-- [ ] Tier dinamico (leaf → hub) basato su peers_active
+- [ ] Tier dinamico (leaf → hub) basato su `peers_active`
 - [ ] Persistenza log su SQLite
 - [ ] Auth JWT tra nodi
 - [ ] UI topologia mesh (grafo nodi)
